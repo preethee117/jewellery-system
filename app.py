@@ -247,9 +247,25 @@ def get_shop_info():
         return {"name": "Jewellery Shop", "phone": "", "address": ""}
 
 def t(key):
-    """Get translation for current language."""
     lang = st.session_state.get("lang", "en")
     return T[lang].get(key, T["en"].get(key, key))
+
+# ── FIXED: safe ID generator — scans ALL rows, skips header, handles empty sheet
+def get_next_order_id(ws):
+    max_n = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        val = str(row[0]).strip() if row[0] else ""
+        if val.startswith("O") and val[1:].isdigit():
+            max_n = max(max_n, int(val[1:]))
+    return f"O{max_n + 1:03d}", f"C{max_n + 1:03d}"
+
+def get_next_payment_id(ws):
+    max_n = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        val = str(row[0]).strip() if row[0] else ""
+        if val.startswith("P") and val[1:].isdigit():
+            max_n = max(max_n, int(val[1:]))
+    return f"P{max_n + 1:03d}"
 
 def generate_pdf_receipt(order_data, payments):
     shop  = get_shop_info()
@@ -343,17 +359,14 @@ if "lang" not in st.session_state:
     st.session_state["lang"] = "en"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOGIN PAGE  —  Role-based access
+# LOGIN
 # ══════════════════════════════════════════════════════════════════════════════
-# Roles: admin = full access | manager = no delete | staff = orders+payments only
 USERS = {
     "admin":   {"password": "jewel123",  "role": "admin"},
     "owner":   {"password": "shop456",   "role": "admin"},
     "manager": {"password": "mgr789",    "role": "manager"},
     "staff":   {"password": "staff111",  "role": "staff"},
 }
-
-# Pages allowed per role
 ROLE_PAGES = {
     "admin":   ["Dashboard","Orders","Payments","Edit / Delete Order",
                 "Customer Ledger","Statement","Alerts","Settings","Help"],
@@ -386,25 +399,21 @@ if not st.session_state["logged_in"]:
     st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR  (only shown after login)
+# SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.title(t("app_title"))
-
-    # Language toggle
     lang_choice = st.radio(t("language"), ["English", "தமிழ்"], horizontal=True,
                            index=0 if st.session_state["lang"]=="en" else 1)
     st.session_state["lang"] = "ta" if lang_choice == "தமிழ்" else "en"
 
-    # Filter pages based on role
     role       = st.session_state.get("role","staff")
     allowed_en = ROLE_PAGES.get(role, ROLE_PAGES["staff"])
-    all_en     = T["en"]["pages"] + ["Alerts"]   # master list
-    # Add Alerts to translations if missing
-    all_ta     = T["ta"]["pages"] + ["விழிப்பூட்டல்கள்"]
+    all_en     = T["en"]["pages"]
+    all_ta     = T["ta"]["pages"]
     lang       = st.session_state.get("lang","en")
     all_local  = all_ta if lang=="ta" else all_en
-    # Build filtered list in local language
+
     filtered_local = []
     filtered_en    = []
     for i, en_pg in enumerate(all_en):
@@ -428,9 +437,7 @@ st.title(t("app_title"))
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-page_en_name = page   # page is already English key from sidebar
-
-if page_en_name == "Dashboard":
+if page == "Dashboard":
     st.header(t("dashboard"))
     try:
         wb     = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
@@ -442,7 +449,7 @@ if page_en_name == "Dashboard":
         for r in orders:
             if not r[0]: continue
             total_orders     += 1
-            total_collection += safe_num(r[9])
+            total_collection += safe_num(r[10])
             total_balance    += max(safe_num(r[9])-safe_num(r[10]), 0)
             ps = str(r[12]).strip() if r[12] else "Pending"
             ds = str(r[13]).strip() if r[13] else "Pending"
@@ -487,9 +494,8 @@ if page_en_name == "Dashboard":
 # ══════════════════════════════════════════════════════════════════════════════
 # ORDERS
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Orders":
+elif page == "Orders":
     st.header(t("new_order"))
-    # ── Customer Info ──
     st.subheader("👤 Customer Details")
     col1,col2 = st.columns(2)
     with col1:
@@ -501,7 +507,6 @@ elif page_en_name == "Orders":
         st.date_input(t("delivery_date"), key="delivery_date", value=date.today())
         st.selectbox(t("del_status"),     ["Pending","Ready","Delivered"], key="delivery_status")
 
-    # ── Jewellery Details ──
     st.subheader(t("jewel_details"))
     col3,col4 = st.columns(2)
     with col3:
@@ -515,7 +520,6 @@ elif page_en_name == "Orders":
         st.number_input(t("cost_price"),     key="cost_price",     min_value=0,   step=100)
         st.text_input(t("stone_details"),    key="stone_details")
 
-    # ── Payment Info ──
     st.subheader("💰 Payment Details")
     col5,col6 = st.columns(2)
     with col5:
@@ -523,11 +527,11 @@ elif page_en_name == "Orders":
     with col6:
         st.number_input(t("advance"),   key="advance_paid", min_value=0, step=100)
 
-    total = st.session_state.get("total_amount",0)
-    adv   = st.session_state.get("advance_paid",0)
-    mc    = st.session_state.get("making_charges",0)
-    cp    = st.session_state.get("cost_price",0)
-    profit= total - cp - mc if total>0 else 0
+    total  = st.session_state.get("total_amount",0)
+    adv    = st.session_state.get("advance_paid",0)
+    mc     = st.session_state.get("making_charges",0)
+    cp     = st.session_state.get("cost_price",0)
+    profit = total - cp - mc if total > 0 else 0
     col_a, col_b = st.columns(2)
     col_a.markdown(f"### {t('balance_preview')}: ₹{max(total-adv,0):,}")
     if cp > 0:
@@ -552,269 +556,358 @@ elif page_en_name == "Orders":
         dstatus= st.session_state["delivery_status"]
         bal_a  = total_a - adv_a
 
-        if not cname:       st.error(f"{t('cust_name')} required.")
-        elif not phone:     st.error(f"{t('phone')} required.")
-        elif not iname:     st.error(f"{t('item_name')} required.")
-        elif adv_a>total_a: st.error("Advance > Total!")
+        if not cname:        st.error(f"{t('cust_name')} required.")
+        elif not phone:      st.error(f"{t('phone')} required.")
+        elif not iname:      st.error(f"{t('item_name')} required.")
+        elif total_a <= 0:   st.error("Total Amount must be greater than 0.")
+        elif adv_a > total_a: st.error("Advance cannot be more than Total Amount!")
         else:
             try:
-                wb=load_workbook(EXCEL_FILE); ws_o=wb["Orders"]; ws_p=wb["Payments"]
-                last_id=ws_o.cell(ws_o.max_row,1).value
-                last_n =int(str(last_id).replace("O","")) if last_id and str(last_id).startswith("O") else 0
-                oid=f"O{last_n+1:03d}"; cid=f"C{last_n+1:03d}"; nr=ws_o.max_row+1
-                pst="Paid" if bal_a<=0 else ("Partially Paid" if adv_a>0 else "Pending")
-                # Columns 1-15 original + 16-21 new jewellery fields
+                wb    = load_workbook(EXCEL_FILE)
+                ws_o  = wb["Orders"]
+                ws_p  = wb["Payments"]
+
+                # FIXED: safe ID generation
+                oid, cid = get_next_order_id(ws_o)
+                nr = ws_o.max_row + 1
+                pst = "Paid" if bal_a<=0 else ("Partially Paid" if adv_a>0 else "Pending")
+
                 for c,v in zip(range(1,16),[oid,cid,cname,phone,addr,iname,idesc,
                                              str(odate),str(ddate),total_a,adv_a,bal_a,pst,dstatus,""]):
-                    ws_o.cell(nr,c).value=v
-                # Extra jewellery columns 16-21
+                    ws_o.cell(nr,c).value = v
                 for c,v in zip(range(16,22),[mtype,purity,weight,making,cost,stone]):
-                    ws_o.cell(nr,c).value=v
-                if adv_a>0:
-                    lp=ws_p.cell(ws_p.max_row,1).value
-                    lpn=int(str(lp).replace("P","")) if lp and str(lp).startswith("P") else 0
-                    pr=ws_p.max_row+1
-                    for c,v in zip(range(1,9),[f"P{lpn+1:03d}",oid,str(odate),adv_a,"Cash","",cname,iname]):
-                        ws_p.cell(pr,c).value=v
+                    ws_o.cell(nr,c).value = v
+
+                if adv_a > 0:
+                    # FIXED: safe payment ID generation
+                    new_pid = get_next_payment_id(ws_p)
+                    pr = ws_p.max_row + 1
+                    for c,v in zip(range(1,9),[new_pid,oid,str(odate),adv_a,"Cash","",cname,iname]):
+                        ws_p.cell(pr,c).value = v
+
                 wb.save(EXCEL_FILE)
-                profit_msg = f" | Est. Profit: ₹{profit:,}" if cost>0 else ""
+                profit_msg = f" | Est. Profit: ₹{profit:,}" if cost > 0 else ""
                 st.success(f"✅ {oid} saved! Advance: ₹{adv_a:,} | Balance: ₹{bal_a:,}{profit_msg}")
-            except Exception as e: st.error(f"❌ {e}")
+                if bal_a > 0:
+                    st.warning(f"When customer pays remaining ₹{bal_a:,}, go to **Payments** and enter Order ID **{oid}**.")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAYMENTS
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Payments":
+elif page == "Payments":
     st.header(t("record_payment"))
-    shop=get_shop_info()
+    st.warning("⚠️ Only enter payments made AFTER the order. Advance at order time is already recorded — do NOT enter it again.")
+    shop = get_shop_info()
     try:
-        wb=load_workbook(EXCEL_FILE,read_only=True,data_only=True)
-        pending=[]
-        for row in wb["Orders"].iter_rows(min_row=2,values_only=True):
+        wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+        pending = []
+        for row in wb["Orders"].iter_rows(min_row=2, values_only=True):
             if not row[0]: continue
             ta=safe_num(row[9]); pa=safe_num(row[10]); b=ta-pa
-            if b>0:
+            if b > 0:
                 pending.append({"Order ID":row[0],"Customer":row[2],"Phone":row[3],"Item":row[5],
                                  "Total":f"₹{ta:,.0f}","Paid":f"₹{pa:,.0f}","Balance Due":f"₹{b:,.0f}","Status":row[12]})
         wb.close()
         if pending:
             st.subheader(t("orders_balance"))
-            st.dataframe(pd.DataFrame(pending),use_container_width=True,hide_index=True)
-        else: st.success(t("no_balance"))
-    except Exception as e: st.warning(f"{e}")
+            st.dataframe(pd.DataFrame(pending), use_container_width=True, hide_index=True)
+        else:
+            st.success(t("no_balance"))
+    except Exception as e:
+        st.warning(f"{e}")
 
-    st.divider(); st.subheader(t("enter_payment"))
-    c1,c2=st.columns(2)
+    st.divider()
+    st.subheader(t("enter_payment"))
+    c1,c2 = st.columns(2)
     with c1:
-        st.text_input(t("order_id"),   key="pay_order_id")
-        st.number_input(t("amount_now"),key="amount_paid",min_value=0,step=100)
-        st.date_input(t("payment_date"),key="payment_date",value=date.today())
+        st.text_input(t("order_id"),    key="pay_order_id")
+        st.number_input(t("amount_now"),key="amount_paid", min_value=0, step=100)
+        st.date_input(t("payment_date"),key="payment_date", value=date.today())
     with c2:
-        st.selectbox(t("payment_mode"),["Cash","UPI","GPay","PhonePe","Bank Transfer"],key="payment_mode")
-        st.text_input(t("txn_id"),     key="transaction_id")
+        st.selectbox(t("payment_mode"),["Cash","UPI","GPay","PhonePe","Bank Transfer"], key="payment_mode")
+        st.text_input(t("txn_id"),      key="transaction_id")
 
-    if st.button(t("save_payment"),type="primary"):
-        pay_oid=st.session_state["pay_order_id"].strip()
-        amt    =st.session_state["amount_paid"]
-        mode   =st.session_state["payment_mode"]
-        txn    =st.session_state["transaction_id"].strip()
-        pdate  =st.session_state["payment_date"]
+    # Live balance preview
+    entered_oid = st.session_state.get("pay_order_id","").strip()
+    if entered_oid:
+        try:
+            wb_chk = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+            for row in wb_chk["Orders"].iter_rows(min_row=2, values_only=True):
+                if str(row[0]) == entered_oid:
+                    cur_bal  = safe_num(row[9]) - safe_num(row[10])
+                    cur_paid = safe_num(row[10])
+                    if cur_bal <= 0:
+                        st.error(f"❌ Order {entered_oid} is already FULLY PAID.")
+                    else:
+                        st.info(f"**{entered_oid} — {row[2]}** | Already paid: ₹{cur_paid:,.0f} | **Balance due: ₹{cur_bal:,.0f}**")
+                    break
+            wb_chk.close()
+        except Exception:
+            pass
+
+    if st.button(t("save_payment"), type="primary"):
+        pay_oid = st.session_state["pay_order_id"].strip()
+        amt     = st.session_state["amount_paid"]
+        mode    = st.session_state["payment_mode"]
+        txn     = st.session_state["transaction_id"].strip()
+        pdate   = st.session_state["payment_date"]
+
         if not pay_oid: st.error("Order ID required.")
-        elif amt<=0:    st.error("Amount must be > 0.")
+        elif amt <= 0:  st.error("Amount must be > 0.")
         else:
             try:
-                wb=load_workbook(EXCEL_FILE); ws_p=wb["Payments"]; ws_o=wb["Orders"]
-                found=False; cname=iname=phone_no=ddate=""
+                wb   = load_workbook(EXCEL_FILE)
+                ws_p = wb["Payments"]
+                ws_o = wb["Orders"]
+                found = False
+                cname = iname = phone_no = ddate = ""
                 for row in ws_o.iter_rows(min_row=2):
-                    if str(row[0].value)==pay_oid:
-                        found=True; cname=row[2].value; iname=row[5].value
-                        phone_no=row[3].value; ddate=row[8].value
-                        ta=safe_num(row[9].value); cp=safe_num(row[10].value); cb=ta-cp
-                        if amt>cb: st.error(f"₹{amt:,} exceeds balance ₹{cb:,.0f}."); wb.close(); st.stop()
-                        np2=cp+amt; nb=ta-np2; ns="Paid" if nb<=0 else "Partially Paid"
-                        row[10].value=np2; row[11].value=nb; row[12].value=ns; break
-                if not found: st.error(f"'{pay_oid}' not found."); wb.close(); st.stop()
-                lp=ws_p.cell(ws_p.max_row,1).value
-                lpn=int(str(lp).replace("P","")) if lp and str(lp).startswith("P") else 0
-                pr=ws_p.max_row+1
-                for c,v in zip(range(1,9),[f"P{lpn+1:03d}",pay_oid,str(pdate),amt,mode,txn,cname,iname]):
-                    ws_p.cell(pr,c).value=v
+                    if str(row[0].value) == pay_oid:
+                        found    = True
+                        cname    = row[2].value
+                        iname    = row[5].value
+                        phone_no = row[3].value
+                        ddate    = row[8].value
+                        ta = safe_num(row[9].value)
+                        cp = safe_num(row[10].value)
+                        cb = ta - cp
+                        if cb <= 0:
+                            st.error(f"Order {pay_oid} is already fully paid.")
+                            wb.close(); st.stop()
+                        if amt > cb:
+                            st.error(f"₹{amt:,} exceeds balance ₹{cb:,.0f}.")
+                            wb.close(); st.stop()
+                        np2 = cp + amt
+                        nb  = ta - np2
+                        ns  = "Paid" if nb <= 0 else "Partially Paid"
+                        row[10].value = np2
+                        row[11].value = nb
+                        row[12].value = ns
+                        break
+
+                if not found:
+                    st.error(f"'{pay_oid}' not found.")
+                    wb.close(); st.stop()
+
+                # FIXED: safe payment ID generation
+                new_pid = get_next_payment_id(ws_p)
+                pr = ws_p.max_row + 1
+                for c,v in zip(range(1,9),[new_pid,pay_oid,str(pdate),amt,mode,txn,cname,iname]):
+                    ws_p.cell(pr,c).value = v
+
                 wb.save(EXCEL_FILE)
-                if nb<=0: st.success(f"✅ Fully PAID! 🎉 {pay_oid}")
-                else:      st.success(f"✅ Paid ₹{np2:,.0f} | Remaining ₹{nb:,.0f}")
-                if nb>0:   whatsapp_widget(pay_oid,cname,iname,nb,ddate,shop["name"],key_suffix="pay")
-            except Exception as e: st.error(f"❌ {e}")
+                if nb <= 0:
+                    st.success(f"✅ Fully PAID! 🎉 {pay_oid}")
+                    st.balloons()
+                else:
+                    st.success(f"✅ Paid ₹{np2:,.0f} | Remaining ₹{nb:,.0f}")
+                    whatsapp_widget(pay_oid, cname, iname, nb, ddate, shop["name"], key_suffix="pay")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EDIT / DELETE
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Edit / Delete Order":
+elif page == "Edit / Delete Order":
     st.header(t("edit_delete"))
     st.info(t("edit_info"))
-    eid_in=st.text_input(t("search_order"))
+    eid_in = st.text_input(t("search_order"))
     if eid_in:
-        eid=eid_in.strip().upper()
+        eid = eid_in.strip().upper()
         try:
-            wb=load_workbook(EXCEL_FILE,data_only=True); ws_o=wb["Orders"]
-            trow=None; tidx=None
-            for idx,row in enumerate(ws_o.iter_rows(min_row=2),start=2):
-                if str(row[0].value).upper()==eid: trow=row; tidx=idx; break
+            wb   = load_workbook(EXCEL_FILE, data_only=True)
+            ws_o = wb["Orders"]
+            trow = None; tidx = None
+            for idx, row in enumerate(ws_o.iter_rows(min_row=2), start=2):
+                if str(row[0].value).upper() == eid:
+                    trow = row; tidx = idx; break
             wb.close()
-            if not trow: st.warning(f"'{eid}' not found.")
+            if not trow:
+                st.warning(f"'{eid}' not found.")
             else:
-                r=[c.value for c in trow]
+                r = [c.value for c in trow]
                 st.subheader(f"{t('editing')}: {eid}")
-                tab1,tab2=st.tabs([f"✏️ {'Edit' if st.session_state['lang']=='en' else 'திருத்து'}",
-                                    f"🗑️ {'Delete' if st.session_state['lang']=='en' else 'நீக்கு'}"])
+                tab1, tab2 = st.tabs(["✏️ Edit", "🗑️ Delete"])
                 with tab1:
-                    c1,c2=st.columns(2)
+                    c1,c2 = st.columns(2)
                     with c1:
-                        nc=st.text_input(t("cust_name"),  value=str(r[2] or ""),key="e_cn")
-                        np=st.text_input(t("phone"),      value=str(r[3] or ""),key="e_ph")
-                        na=st.text_area(t("address"),     value=str(r[4] or ""),key="e_ad",height=80)
-                        ni=st.text_input(t("item_name"),  value=str(r[5] or ""),key="e_in")
-                        nd=st.text_area(t("item_desc"),   value=str(r[6] or ""),key="e_id",height=80)
+                        nc = st.text_input(t("cust_name"),  value=str(r[2] or ""), key="e_cn")
+                        np = st.text_input(t("phone"),      value=str(r[3] or ""), key="e_ph")
+                        na = st.text_area(t("address"),     value=str(r[4] or ""), key="e_ad", height=80)
+                        ni = st.text_input(t("item_name"),  value=str(r[5] or ""), key="e_in")
+                        nd = st.text_area(t("item_desc"),   value=str(r[6] or ""), key="e_id", height=80)
                     with c2:
-                        nt=st.number_input(t("total_amt"),value=safe_num(r[9]), min_value=0,step=100,key="e_ta")
-                        npd=st.number_input(t("advance"),  value=safe_num(r[10]),min_value=0,step=100,key="e_pd")
-                        nds=st.selectbox(t("del_status"),["Pending","Ready","Delivered"],
-                                          index=["Pending","Ready","Delivered"].index(str(r[13]).strip())
-                                          if r[13] and str(r[13]).strip() in ["Pending","Ready","Delivered"] else 0,key="e_ds")
-                    if st.button(t("save_changes"),type="primary"):
-                        nb2=nt-npd; nps="Paid" if nb2<=0 else ("Partially Paid" if npd>0 else "Pending")
+                        nt  = st.number_input(t("total_amt"), value=safe_num(r[9]),  min_value=0, step=100, key="e_ta")
+                        npd = st.number_input(t("advance"),   value=safe_num(r[10]), min_value=0, step=100, key="e_pd")
+                        nds = st.selectbox(t("del_status"), ["Pending","Ready","Delivered"],
+                                            index=["Pending","Ready","Delivered"].index(str(r[13]).strip())
+                                            if r[13] and str(r[13]).strip() in ["Pending","Ready","Delivered"] else 0,
+                                            key="e_ds")
+                    if st.button(t("save_changes"), type="primary"):
+                        nb2 = nt - npd
+                        nps = "Paid" if nb2<=0 else ("Partially Paid" if npd>0 else "Pending")
                         try:
-                            wb2=load_workbook(EXCEL_FILE); ws2=wb2["Orders"]
+                            wb2  = load_workbook(EXCEL_FILE)
+                            ws2  = wb2["Orders"]
                             for col,val in zip([3,4,5,6,7,10,11,12,13,14],[nc,np,na,ni,nd,nt,npd,nb2,nps,nds]):
-                                ws2.cell(tidx,col).value=val
-                            wb2.save(EXCEL_FILE); st.success(f"✅ {eid} updated!")
-                        except Exception as e: st.error(f"❌ {e}")
+                                ws2.cell(tidx,col).value = val
+                            wb2.save(EXCEL_FILE)
+                            st.success(f"✅ {eid} updated!")
+                        except Exception as e:
+                            st.error(f"❌ {e}")
                 with tab2:
                     st.warning(t("delete_warn"))
-                    conf=st.text_input(t("confirm_del"),key="del_conf")
-                    if st.button(t("delete_order"),type="primary"):
-                        if conf.strip().upper()!=eid: st.error("ID mismatch. Cancelled.")
+                    conf = st.text_input(t("confirm_del"), key="del_conf")
+                    if st.button(t("delete_order"), type="primary"):
+                        if conf.strip().upper() != eid:
+                            st.error("ID mismatch. Cancelled.")
                         else:
                             try:
-                                wb3=load_workbook(EXCEL_FILE); ws3o=wb3["Orders"]; ws3p=wb3["Payments"]
+                                wb3  = load_workbook(EXCEL_FILE)
+                                ws3o = wb3["Orders"]
+                                ws3p = wb3["Payments"]
                                 ws3o.delete_rows(tidx)
-                                to_del=[i for i,row in enumerate(ws3p.iter_rows(min_row=2,values_only=True),start=2)
-                                        if row[1] and str(row[1]).upper()==eid]
-                                for i in reversed(to_del): ws3p.delete_rows(i)
-                                wb3.save(EXCEL_FILE); st.success(f"✅ {eid} deleted.")
-                            except Exception as e: st.error(f"❌ {e}")
-        except Exception as e: st.error(f"❌ {e}")
+                                to_del = [i for i,row in enumerate(ws3p.iter_rows(min_row=2,values_only=True),start=2)
+                                          if row[1] and str(row[1]).upper()==eid]
+                                for i in reversed(to_del):
+                                    ws3p.delete_rows(i)
+                                wb3.save(EXCEL_FILE)
+                                st.success(f"✅ {eid} deleted.")
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+        except Exception as e:
+            st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CUSTOMER LEDGER
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Customer Ledger":
+elif page == "Customer Ledger":
     st.header(t("cust_ledger"))
     st.info(t("ledger_info"))
-    shop=get_shop_info()
+    shop = get_shop_info()
     try:
-        wb=load_workbook(EXCEL_FILE,read_only=True,data_only=True)
-        ord_raw=list(wb["Orders"].iter_rows(min_row=2,values_only=True))
-        pay_raw=list(wb["Payments"].iter_rows(min_row=2,values_only=True))
+        wb      = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+        ord_raw = list(wb["Orders"].iter_rows(min_row=2, values_only=True))
+        pay_raw = list(wb["Payments"].iter_rows(min_row=2, values_only=True))
         wb.close()
-        srch=st.text_input(t("search_cust"))
+        srch = st.text_input(t("search_cust"))
         if srch:
-            s=srch.strip().lower()
-            matched=[r for r in ord_raw if r[0] and(s in str(r[2]).lower() or s in str(r[3]).lower() or s in str(r[0]).lower())]
-            if not matched: st.warning(t("no_cust"))
+            s = srch.strip().lower()
+            matched = [r for r in ord_raw if r[0] and (
+                s in str(r[2]).lower() or
+                s in str(r[3]).lower() or
+                s in str(r[0]).lower()
+            )]
+            if not matched:
+                st.warning(t("no_cust"))
             else:
                 for order in matched:
-                    oid=order[0]; cname=order[2]; phone=order[3]; iname=order[5]
-                    total=safe_num(order[9]); paid=safe_num(order[10]); bal=total-paid
-                    pstat=order[12]; dstat=order[13]; ddate=order[8]
-                    icon="🟢" if bal<=0 else("🟡" if paid>0 else"🔴")
-                    with st.expander(f"{icon} {oid} — {cname} | {iname} | ₹{bal:,.0f}",expanded=True):
-                        c1,c2,c3=st.columns(3)
-                        c1.metric(t("total_amt"),  f"₹{total:,.0f}")
-                        c2.metric(t("advance"),    f"₹{paid:,.0f}")
+                    oid   = order[0]; cname = order[2]; phone = order[3]; iname = order[5]
+                    total = safe_num(order[9]); paid = safe_num(order[10]); bal = total - paid
+                    pstat = order[12]; dstat = order[13]; ddate = order[8]
+                    icon  = "🟢" if bal<=0 else ("🟡" if paid>0 else "🔴")
+                    with st.expander(f"{icon} {oid} — {cname} | {iname} | ₹{bal:,.0f}", expanded=True):
+                        c1,c2,c3 = st.columns(3)
+                        c1.metric(t("total_amt"),    f"₹{total:,.0f}")
+                        c2.metric(t("advance"),      f"₹{paid:,.0f}")
                         c3.metric(t("total_balance"),f"₹{bal:,.0f}")
-                        st.markdown(f"""| | |\n|---|---|\n| **{t('phone')}** | {phone} |\n| **{t('item_name')}** | {iname} |\n| **{t('order_date')}** | {fmt_date(order[7])} |\n| **{t('delivery_date')}** | {fmt_date(ddate)} |\n| **Pay Status** | {pstat} |\n| **Delivery** | {dstat} |""")
-                        cust_pay=[p for p in pay_raw if p[1] and str(p[1])==str(oid)]
+                        st.markdown(f"""| | |
+|---|---|
+| **{t('phone')}** | {phone} |
+| **{t('item_name')}** | {iname} |
+| **{t('order_date')}** | {fmt_date(order[7])} |
+| **{t('delivery_date')}** | {fmt_date(ddate)} |
+| **Pay Status** | {pstat} |
+| **Delivery** | {dstat} |""")
+                        cust_pay = [p for p in pay_raw if p[1] and str(p[1])==str(oid)]
                         if cust_pay:
                             st.markdown(f"**{t('pay_history')}:**")
-                            n=len(cust_pay[0])
-                            base=["Payment_ID","Order_ID","Date","Amount","Mode","Txn_ID","Customer","Item"]
-                            cols=base[:n]+[f"Col{i}" for i in range(n-len(base))] if n>len(base) else base[:n]
-                            df_p=pd.DataFrame(cust_pay,columns=cols)
-                            show=[c for c in["Payment_ID","Date","Amount","Mode","Txn_ID"] if c in df_p.columns]
-                            df_p=df_p[show]
-                            if "Amount" in df_p.columns: df_p["Amount"]=df_p["Amount"].apply(lambda x:f"₹{safe_num(x):,.0f}")
-                            if "Date"   in df_p.columns: df_p["Date"]  =df_p["Date"].apply(fmt_date)
-                            st.dataframe(df_p,use_container_width=True,hide_index=True)
-                        else: st.info(t("no_pay_rec"))
-                        bc1,bc2=st.columns(2)
+                            n    = len(cust_pay[0])
+                            base = ["Payment_ID","Order_ID","Date","Amount","Mode","Txn_ID","Customer","Item"]
+                            cols = base[:n] + [f"Col{i}" for i in range(n-len(base))] if n>len(base) else base[:n]
+                            df_p = pd.DataFrame(cust_pay, columns=cols)
+                            show = [c for c in ["Payment_ID","Date","Amount","Mode","Txn_ID"] if c in df_p.columns]
+                            df_p = df_p[show]
+                            if "Amount" in df_p.columns: df_p["Amount"] = df_p["Amount"].apply(lambda x: f"₹{safe_num(x):,.0f}")
+                            if "Date"   in df_p.columns: df_p["Date"]   = df_p["Date"].apply(fmt_date)
+                            st.dataframe(df_p, use_container_width=True, hide_index=True)
+                        else:
+                            st.info(t("no_pay_rec"))
+                        bc1, bc2 = st.columns(2)
                         with bc1:
-                            html_r=generate_pdf_receipt(order,cust_pay)
-                            st.download_button(t("download_receipt"),data=html_r.encode("utf-8"),
-                                               file_name=f"Receipt_{oid}.html",mime="text/html",key=f"pdf_{oid}")
+                            html_r = generate_pdf_receipt(order, cust_pay)
+                            st.download_button(t("download_receipt"), data=html_r.encode("utf-8"),
+                                               file_name=f"Receipt_{oid}.html", mime="text/html", key=f"pdf_{oid}")
                         with bc2:
-                            if bal>0: whatsapp_widget(oid,cname,iname,bal,ddate,shop["name"],key_suffix=oid)
-                        if bal>0: st.warning(f"{t('still_pending')} {cname}: ₹{bal:,.0f}")
-                        else:     st.success(t("fully_paid"))
-    except Exception as e: st.error(f"❌ {e}")
+                            if bal > 0:
+                                whatsapp_widget(oid, cname, iname, bal, ddate, shop["name"], key_suffix=oid)
+                        if bal > 0: st.warning(f"{t('still_pending')} {cname}: ₹{bal:,.0f}")
+                        else:       st.success(t("fully_paid"))
+    except Exception as e:
+        st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STATEMENT
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Statement":
+elif page == "Statement":
     st.header(t("statement"))
-    shop=get_shop_info()
+    shop = get_shop_info()
     try:
-        wb=load_workbook(EXCEL_FILE,read_only=True,data_only=True)
-        od=list(wb["Orders"].iter_rows(values_only=True))
-        pd2=list(wb["Payments"].iter_rows(values_only=True))
+        wb  = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+        od  = list(wb["Orders"].iter_rows(values_only=True))
+        pd2 = list(wb["Payments"].iter_rows(values_only=True))
         wb.close()
-        sid_in=st.text_input(t("search_order"))
+        sid_in = st.text_input(t("search_order"))
         if sid_in:
-            sid=sid_in.strip().upper()
-            mo=[r for r in od[1:] if r[0] and str(r[0]).upper()==sid]
-            mp=[r for r in pd2[1:] if r[1] and str(r[1]).upper()==sid]
-            if not mo: st.warning(f"No order: {sid}")
+            sid = sid_in.strip().upper()
+            mo  = [r for r in od[1:]  if r[0] and str(r[0]).upper()==sid]
+            mp  = [r for r in pd2[1:] if r[1] and str(r[1]).upper()==sid]
+            if not mo:
+                st.warning(f"No order: {sid}")
             else:
                 st.subheader(f"{t('order_details')} — {sid}")
-                st.dataframe(pd.DataFrame(mo,columns=od[0]),use_container_width=True,hide_index=True)
+                st.dataframe(pd.DataFrame(mo, columns=od[0]), use_container_width=True, hide_index=True)
                 st.subheader(f"{t('payments_for')} {sid}")
                 if mp:
-                    base=["Payment_ID","Order_ID","Payment_Date","Amount_Paid","Payment_Mode","Transaction_ID","Customer_Name","Item_Name"]
-                    n=len(mp[0]); ph=base[:n] if n<=len(base) else base+[f"Extra_{i}" for i in range(n-len(base))]
-                    st.dataframe(pd.DataFrame(mp,columns=ph),use_container_width=True,hide_index=True)
-                    ta=safe_num(mo[0][9]); pa=sum(safe_num(r[3]) for r in mp); ba=ta-pa
+                    base = ["Payment_ID","Order_ID","Payment_Date","Amount_Paid","Payment_Mode","Transaction_ID","Customer_Name","Item_Name"]
+                    n    = len(mp[0])
+                    ph   = base[:n] if n<=len(base) else base+[f"Extra_{i}" for i in range(n-len(base))]
+                    st.dataframe(pd.DataFrame(mp, columns=ph), use_container_width=True, hide_index=True)
+                    ta = safe_num(mo[0][9]); pa = sum(safe_num(r[3]) for r in mp); ba = ta-pa
                     st.divider()
-                    c1,c2,c3=st.columns(3)
-                    c1.metric(t("total_amt"),f"₹{ta:,.0f}"); c2.metric(t("advance"),f"₹{pa:,.0f}"); c3.metric(t("total_balance"),f"₹{ba:,.0f}")
+                    c1,c2,c3 = st.columns(3)
+                    c1.metric(t("total_amt"),    f"₹{ta:,.0f}")
+                    c2.metric(t("advance"),      f"₹{pa:,.0f}")
+                    c3.metric(t("total_balance"),f"₹{ba:,.0f}")
                     st.success(t("fully_paid")) if ba<=0 else st.warning(f"⚠️ ₹{ba:,.0f} pending.")
-                else: st.info(t("no_pay_found"))
-                html_r=generate_pdf_receipt(mo[0],mp)
-                st.download_button(t("download_receipt"),data=html_r.encode("utf-8"),
-                                   file_name=f"Receipt_{sid}.html",mime="text/html")
+                else:
+                    st.info(t("no_pay_found"))
+                html_r = generate_pdf_receipt(mo[0], mp)
+                st.download_button(t("download_receipt"), data=html_r.encode("utf-8"),
+                                   file_name=f"Receipt_{sid}.html", mime="text/html")
         else:
             st.info(f"👆 {t('search_order')}")
             st.divider(); st.subheader(t("quick_summary"))
-            if len(od)>1:
-                st.metric(t("total_in_system"),len(od)-1)
+            if len(od) > 1:
+                st.metric(t("total_in_system"), len(od)-1)
                 st.markdown(f"**{t('recent_orders')}:**")
-                st.dataframe(pd.DataFrame(od[1:6],columns=od[0]),use_container_width=True,hide_index=True)
-    except Exception as e: st.error(f"❌ {e}")
-
+                st.dataframe(pd.DataFrame(od[1:6], columns=od[0]), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ALERTS  —  Pending orders + Low balance WhatsApp
+# ALERTS
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Alerts":
+elif page == "Alerts":
     st.header("🔔 Alerts & Reminders")
     shop = get_shop_info()
     try:
-        wb       = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-        orders   = list(wb["Orders"].iter_rows(min_row=2, values_only=True))
+        wb     = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+        orders = list(wb["Orders"].iter_rows(min_row=2, values_only=True))
         wb.close()
-
         today = date.today()
-
-        # ── Overdue deliveries ──────────────────────────────────────────────
         overdue, due_today, pending_pay = [], [], []
         for r in orders:
             if not r[0]: continue
@@ -825,45 +918,36 @@ elif page_en_name == "Alerts":
                 from datetime import datetime
                 ddate_obj = datetime.strptime(ddate_str, "%Y-%m-%d").date() if ddate_str else None
             except: ddate_obj = None
-
             if dstatus != "Delivered":
-                if ddate_obj and ddate_obj < today:
-                    overdue.append(r)
-                elif ddate_obj and ddate_obj == today:
-                    due_today.append(r)
-
+                if ddate_obj and ddate_obj < today:   overdue.append(r)
+                elif ddate_obj and ddate_obj == today: due_today.append(r)
             if bal > 0 and dstatus != "Delivered":
                 pending_pay.append(r)
 
-        # ── Overdue ────────────────────────────────────────────────────────
         st.subheader(f"🚨 Overdue Deliveries ({len(overdue)})")
         if overdue:
             df_ov = pd.DataFrame(overdue)[[0,2,3,5,8,9,10,13]]
-            df_ov.columns=["Order ID","Customer","Phone","Item","Delivery Date","Total","Paid","Delivery"]
-            df_ov["Total"]=df_ov["Total"].apply(lambda x:f"₹{safe_num(x):,.0f}")
-            df_ov["Paid"] =df_ov["Paid"].apply(lambda x:f"₹{safe_num(x):,.0f}")
-            df_ov["Delivery Date"]=df_ov["Delivery Date"].apply(fmt_date)
+            df_ov.columns = ["Order ID","Customer","Phone","Item","Delivery Date","Total","Paid","Delivery"]
+            df_ov["Total"] = df_ov["Total"].apply(lambda x: f"₹{safe_num(x):,.0f}")
+            df_ov["Paid"]  = df_ov["Paid"].apply(lambda x: f"₹{safe_num(x):,.0f}")
+            df_ov["Delivery Date"] = df_ov["Delivery Date"].apply(fmt_date)
             st.dataframe(df_ov, use_container_width=True, hide_index=True)
         else:
             st.success("✅ No overdue deliveries!")
 
         st.divider()
-
-        # ── Due Today ──────────────────────────────────────────────────────
         st.subheader(f"📅 Deliveries Due Today ({len(due_today)})")
         if due_today:
             df_dt = pd.DataFrame(due_today)[[0,2,3,5,8,9,10,13]]
-            df_dt.columns=["Order ID","Customer","Phone","Item","Delivery Date","Total","Paid","Delivery"]
-            df_dt["Total"]=df_dt["Total"].apply(lambda x:f"₹{safe_num(x):,.0f}")
-            df_dt["Paid"] =df_dt["Paid"].apply(lambda x:f"₹{safe_num(x):,.0f}")
-            df_dt["Delivery Date"]=df_dt["Delivery Date"].apply(fmt_date)
+            df_dt.columns = ["Order ID","Customer","Phone","Item","Delivery Date","Total","Paid","Delivery"]
+            df_dt["Total"] = df_dt["Total"].apply(lambda x: f"₹{safe_num(x):,.0f}")
+            df_dt["Paid"]  = df_dt["Paid"].apply(lambda x: f"₹{safe_num(x):,.0f}")
+            df_dt["Delivery Date"] = df_dt["Delivery Date"].apply(fmt_date)
             st.dataframe(df_dt, use_container_width=True, hide_index=True)
         else:
             st.success("✅ No deliveries due today!")
 
         st.divider()
-
-        # ── Pending Payments with WhatsApp ─────────────────────────────────
         st.subheader(f"💰 Pending Balance Orders ({len(pending_pay)})")
         if pending_pay:
             st.info("Click 📲 next to each order to send a WhatsApp reminder.")
@@ -872,15 +956,14 @@ elif page_en_name == "Alerts":
                 iname = r[5]; ddate = r[8]
                 total = safe_num(r[9]); paid = safe_num(r[10]); bal = total - paid
                 dstatus = str(r[13]).strip() if r[13] else "Pending"
-                col1, col2, col3, col4, col5 = st.columns([1.5,2,1.5,1.5,2])
+                col1,col2,col3,col4,col5 = st.columns([1.5,2,1.5,1.5,2])
                 col1.write(f"**{oid}**")
                 col2.write(f"{cname}")
                 col3.write(f"₹{bal:,.0f} due")
                 col4.write(f"🚚 {dstatus}")
                 with col5:
                     with st.popover("📲 Send Reminder"):
-                        wa_num = st.text_input("WhatsApp No.", placeholder="9876543210",
-                                               key=f"alert_wa_{oid}")
+                        wa_num = st.text_input("WhatsApp No.", placeholder="9876543210", key=f"alert_wa_{oid}")
                         if wa_num:
                             clean = "".join(filter(str.isdigit, wa_num))
                             if len(clean) not in (10,12):
@@ -892,12 +975,10 @@ elif page_en_name == "Alerts":
             st.success("🎉 No pending balance orders!")
 
         st.divider()
-
-        # ── Bulk summary ───────────────────────────────────────────────────
         st.subheader("📊 Alert Summary")
         c1,c2,c3 = st.columns(3)
-        c1.metric("🚨 Overdue",       len(overdue))
-        c2.metric("📅 Due Today",     len(due_today))
+        c1.metric("🚨 Overdue",         len(overdue))
+        c2.metric("📅 Due Today",       len(due_today))
         c3.metric("💰 Pending Payment", len(pending_pay))
 
     except FileNotFoundError:
@@ -908,86 +989,95 @@ elif page_en_name == "Alerts":
 # ══════════════════════════════════════════════════════════════════════════════
 # SETTINGS + BACKUP & RESTORE
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Settings":
+elif page == "Settings":
     st.header(t("settings"))
     try:
-        wb=load_workbook(EXCEL_FILE,read_only=True,data_only=True)
-        ws=wb["Settings"]
-        row=list(ws.iter_rows(min_row=2,values_only=True))[0]
+        wb  = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+        ws  = wb["Settings"]
+        row = list(ws.iter_rows(min_row=2, values_only=True))[0]
         wb.close()
-        st.text_input(t("shop_name"),   value=str(row[0] or ""),disabled=True)
-        st.text_input(t("shop_phone"),  value=str(row[1] or ""),disabled=True)
-        st.text_input(t("shop_address"),value=str(row[2] or ""),disabled=True)
+        st.text_input(t("shop_name"),    value=str(row[0] or ""), disabled=True)
+        st.text_input(t("shop_phone"),   value=str(row[1] or ""), disabled=True)
+        st.text_input(t("shop_address"), value=str(row[2] or ""), disabled=True)
         st.info(t("settings_info"))
-    except Exception: st.info(t("settings_info"))
+    except Exception:
+        st.info(t("settings_info"))
 
     st.divider()
     st.subheader(t("backup_restore"))
-
-    # ── Backup ──
-    col1,col2=st.columns(2)
+    col1,col2 = st.columns(2)
     with col1:
         st.markdown("#### 📥 Backup")
-        if st.button(t("backup_now"),type="primary"):
+        if st.button(t("backup_now"), type="primary"):
             try:
                 shutil.copy2(EXCEL_FILE, BACKUP_FILE)
                 st.success(t("backup_success"))
-            except Exception as e: st.error(f"❌ {e}")
-        # Always offer download of backup if it exists
+            except Exception as e:
+                st.error(f"❌ {e}")
         if os.path.exists(BACKUP_FILE):
             with open(BACKUP_FILE,"rb") as f:
-                st.download_button(t("backup_download"),data=f.read(),
-                                   file_name=BACKUP_FILE,mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        # Also offer download of live file
+                st.download_button(t("backup_download"), data=f.read(),
+                                   file_name=BACKUP_FILE,
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         if os.path.exists(EXCEL_FILE):
             with open(EXCEL_FILE,"rb") as f:
-                st.download_button("⬇️ Download Live Excel",data=f.read(),
-                                   file_name=EXCEL_FILE,mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                st.download_button("⬇️ Download Live Excel", data=f.read(),
+                                   file_name=EXCEL_FILE,
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    key="dl_live")
-
     with col2:
         st.markdown(f"#### ♻️ {t('restore_title')}")
         st.warning(t("restore_warn"))
-        uploaded=st.file_uploader(t("restore_upload"),type=["xlsx"],key="restore_upload")
-        if uploaded and st.button(t("restore_btn"),type="primary"):
+        uploaded = st.file_uploader(t("restore_upload"), type=["xlsx"], key="restore_upload")
+        if uploaded and st.button(t("restore_btn"), type="primary"):
             try:
-                with open(EXCEL_FILE,"wb") as f: f.write(uploaded.read())
+                with open(EXCEL_FILE,"wb") as f:
+                    f.write(uploaded.read())
                 st.success(t("restore_success"))
                 st.rerun()
-            except Exception as e: st.error(f"❌ {e}")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELP
 # ══════════════════════════════════════════════════════════════════════════════
-elif page_en_name == "Help":
+elif page == "Help":
     st.header(t("help"))
     st.markdown("""
 ### Features
 
 | Feature | Where |
 |---|---|
-| 🔐 Login (admin/owner) | Login page |
+| 🔐 Login (admin/owner/manager/staff) | Login page |
 | 🌐 Tamil / English switch | Sidebar |
-| 📊 Dashboard charts | Dashboard |
+| 📊 Dashboard with charts | Dashboard |
 | ⚠️ Pending delivery alerts | Dashboard |
-| 💾 New order | Orders |
+| 💾 New order with jewellery details | Orders |
 | 💳 Record payment | Payments |
 | ✏️ Edit order | Edit / Delete Order |
 | 🗑️ Delete order | Edit / Delete Order |
 | 🔍 Search customer | Customer Ledger |
-| 🖨️ Download Receipt (PDF) | Customer Ledger / Statement |
-| 📲 WhatsApp Reminder | Customer Ledger |
+| 🖨️ Download Receipt (HTML→PDF) | Customer Ledger / Statement |
+| 📲 WhatsApp Reminder | Customer Ledger / Alerts |
+| 🚨 Overdue & due-today alerts | Alerts |
 | 📥 Backup Excel | Settings |
 | ♻️ Restore from backup | Settings |
 
-### Default Login
-| Username | Password |
-|---|---|
-| admin | jewel123 |
-| owner | shop456 |
+### Default Logins
+| Username | Password | Role |
+|---|---|---|
+| admin | jewel123 | Full access |
+| owner | shop456 | Full access |
+| manager | mgr789 | No delete |
+| staff | staff111 | Orders & Payments only |
 
-> To change passwords, edit the `USERS` dict in app.py line ~190.
+> To change passwords, edit the `USERS` dict in app.py.
 
 ### Receipt as PDF
 Download receipt → open in Chrome → Ctrl+P → Save as PDF
+
+### Important Rules
+- Always **close Excel** before saving from the app
+- Advance at order time is **auto-recorded** in Payments — never enter it again
+- App creates a **backup** in Settings before major changes
     """)
